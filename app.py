@@ -5,6 +5,12 @@ import requests
 import re
 import json
 import math
+import os
+
+from dotenv import load_dotenv
+from google import genai
+
+load_dotenv()
 
 from analysis_engine import analyze_dataset
 from dataset_profiler import profile_dataset
@@ -885,78 +891,49 @@ def build_business_facts(df):
     return facts
 
 
-# =========================================================
-# OLLAMA
-# =========================================================
+def call_gemini(prompt, timeout=180):
+    import time
 
-def call_ollama(prompt, timeout=180):
-    
-    url = "http://127.0.0.1:11434/api/generate"
+    api_key = os.getenv("GEMINI_API_KEY")
 
-    payload = {
-        "model": "qwen2.5:3b",
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 200
-        }
-    }
+    if not api_key:
+        try:
+            api_key = st.secrets["GEMINI_API_KEY"]
+        except Exception:
+            api_key = None
 
-    try:
+    if not api_key:
+        return None, "GEMINI_API_KEY was not found."
 
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=timeout
-        )
+    client = genai.Client(api_key=api_key)
 
-        if response.status_code != 200:
+    last_error = None
 
-            return None, (
-                f"Ollama returned HTTP "
-                f"{response.status_code}: "
-                f"{response.text}"
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
             )
 
-        data = response.json()
+            answer = str(response.text or "").strip()
 
-        answer = str(
-            data.get("response", "")
-        ).strip()
+            if not answer:
+                return None, "Gemini returned an empty response."
 
-        if not answer:
+            return answer, None
 
-            return None, (
-                "Ollama returned an empty response."
-            )
+        except Exception as e:
+            last_error = e
 
-        return answer, None
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                if attempt < 2:
+                    time.sleep(5)
+                    continue
 
-    except requests.exceptions.ConnectionError:
+            return None, f"Gemini request failed: {e}"
 
-        return None, (
-            "Could not connect to Ollama. "
-            "Make sure Ollama is running."
-        )
-
-    except requests.exceptions.Timeout:
-
-        return None, (
-            f"Ollama took longer than "
-            f"{timeout} seconds to respond."
-        )
-
-    except requests.exceptions.RequestException as e:
-
-        return None, (
-            f"Ollama request failed: {e}"
-        )
-
-    except Exception as e:
-
-        return None, str(e)
-
+    return None, f"Gemini request failed after 3 attempts: {last_error}"
 # =========================================================
 # HEADER
 # =========================================================
@@ -1739,7 +1716,7 @@ Use concise bullet points.
 """
 
     with st.spinner("🤖 Generating business insights..."):
-        ai_response, error = call_ollama(prompt, timeout=180)
+       ai_response, error = call_gemini(prompt, timeout=180)
 
     if error:
         st.error(error)
@@ -1983,7 +1960,7 @@ Return ONLY the answers.
     with st.spinner("🤖 Preparing AI answers..."):
         print("PROMPT LENGTH:", len(prompt))
         print("PROMPT WORDS:", len(prompt.split()))
-        answer, error = call_ollama(prompt, timeout=60)
+        answer, error = call_gemini(prompt, timeout=60)
 
     if error:
         st.error(error)
